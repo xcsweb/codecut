@@ -44,7 +44,14 @@ export const AssetStreamSchema = object({
   channelLayout: Type.Optional(Type.String({ minLength: 1 })),
   duration: Type.Optional(Type.Number({ minimum: 0 })),
   bitRate: Type.Optional(Type.Integer({ minimum: 0 })),
+  rotation: Type.Optional(Type.Number({ description: 'Display rotation in degrees reported by ffprobe, if any.' })),
 });
+
+export const NormalizedSourceSchema = object({
+  path: Type.String({ minLength: 1, description: 'Project-relative path of the original source that was transcoded.' }),
+  codecName: Type.Optional(Type.String({ minLength: 1 })),
+  rotation: Type.Optional(Type.Number()),
+}, 'Records that this asset was transcoded to H.264 with rotation baked in.');
 
 export const AssetMetadataSchema = object({
   probedAt: Type.String({ format: 'date-time' }),
@@ -54,6 +61,7 @@ export const AssetMetadataSchema = object({
   formatName: Type.Optional(Type.String({ minLength: 1 })),
   bitRate: Type.Optional(Type.Integer({ minimum: 0 })),
   streams: Type.Array(AssetStreamSchema),
+  normalizedFrom: Type.Optional(NormalizedSourceSchema),
 }, 'Selected ffprobe metadata; probedAt and fingerprint describe when it was captured.');
 
 export const AssetSchema = object({
@@ -84,6 +92,32 @@ export const TransitionSchema = Type.Union([
   }),
 ]);
 
+export const ShakeEffectSchema = object({
+  type: Type.Literal('shake'),
+  amplitude: Type.Optional(Type.Number({
+    minimum: 0,
+    maximum: 512,
+    default: 20,
+    description: 'Jitter amplitude in output pixels on each axis.',
+  })),
+  frequency: Type.Optional(Type.Number({
+    exclusiveMinimum: 0,
+    maximum: 60,
+    default: 8,
+    description: 'Jitter steps per second.',
+  })),
+}, 'Random camera shake; the frame is cropped by 2x amplitude and scaled back.');
+
+export const FlashEffectSchema = object({
+  type: Type.Literal('flash'),
+  at: Type.Number({ minimum: 0, description: 'Flash start in seconds relative to the clip start.' }),
+  duration: Type.Optional(Type.Number({ exclusiveMinimum: 0, default: 0.12 })),
+  color: Type.Optional(Type.Literal('white', { default: 'white' })),
+  strength: Type.Optional(Type.Number({ minimum: 0, maximum: 1, default: 0.55 })),
+}, 'Brightness flash over a clip-relative time window.');
+
+export const EffectSchema = Type.Union([ShakeEffectSchema, FlashEffectSchema]);
+
 const clipProperties = {
   id: IdentifierSchema,
   start: Type.Number({ minimum: 0, description: 'Timeline start in seconds.' }),
@@ -100,8 +134,15 @@ const clipProperties = {
   transition: Type.Optional(TransitionSchema),
 };
 
-export const VideoClipSchema = object({
+const visualClipProperties = {
   ...clipProperties,
+  effects: Type.Optional(Type.Array(EffectSchema, {
+    description: 'Visual effects applied to the clip after its normal transform chain; an empty array means none.',
+  })),
+};
+
+export const VideoClipSchema = object({
+  ...visualClipProperties,
   type: Type.Literal('video'),
   assetId: IdentifierSchema,
 });
@@ -113,13 +154,13 @@ export const AudioClipSchema = object({
 });
 
 export const ImageClipSchema = object({
-  ...clipProperties,
+  ...visualClipProperties,
   type: Type.Literal('image'),
   assetId: IdentifierSchema,
 });
 
 export const ColorClipSchema = object({
-  ...clipProperties,
+  ...visualClipProperties,
   type: Type.Literal('color'),
   color: Type.String({
     pattern: '^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$',
@@ -128,7 +169,7 @@ export const ColorClipSchema = object({
 });
 
 export const TextClipSchema = object({
-  ...clipProperties,
+  ...visualClipProperties,
   type: Type.Literal('text'),
   text: Type.String({ minLength: 1 }),
   fontFamily: Type.Optional(Type.String({ minLength: 1, default: 'sans' })),
@@ -213,6 +254,9 @@ const ClipParamsSchema = object({
   fadeIn: Type.Optional(Type.Number({ minimum: 0 })),
   fadeOut: Type.Optional(Type.Number({ minimum: 0 })),
   transition: Type.Optional(TransitionSchema),
+  effects: Type.Optional(Type.Array(EffectSchema, {
+    description: 'Replace the clip effect chain; pass an empty array to clear.',
+  })),
 });
 
 export const EditOperationSchema = Type.Union([
@@ -240,6 +284,15 @@ export const EditOperationSchema = Type.Union([
   }),
   object({ type: Type.Literal('removeClip'), clipId: IdentifierSchema }),
   object({ type: Type.Literal('setClipParams'), clipId: IdentifierSchema, params: ClipParamsSchema }),
+  object({
+    type: Type.Literal('setSpeedRamp'),
+    clipId: IdentifierSchema,
+    points: Type.Array(object({
+      at: Type.Number({ minimum: 0, maximum: 1, description: 'Normalized position inside the clip source span.' }),
+      speed: Type.Number({ minimum: 0.1, maximum: 10 }),
+    }), { minItems: 2 }),
+    steps: Type.Optional(Type.Integer({ minimum: 2, maximum: 48, default: 8 })),
+  }, 'Approximate a piecewise-linear speed curve by splitting the clip into constant-speed slices.'),
   object({ type: Type.Literal('addText'), trackId: IdentifierSchema, clip: TextClipSchema }),
   object({ type: Type.Literal('importSrt'), trackId: IdentifierSchema, path: RelativePathSchema }),
 ], { $id: 'https://codecut.local/schemas/edit-operation-v1.json' });
@@ -701,6 +754,9 @@ export type AssetMetadata = Static<typeof AssetMetadataSchema>;
 export type Crop = Static<typeof CropSchema>;
 export type Position = Static<typeof PositionSchema>;
 export type Transition = Static<typeof TransitionSchema>;
+export type ShakeEffect = Static<typeof ShakeEffectSchema>;
+export type FlashEffect = Static<typeof FlashEffectSchema>;
+export type Effect = Static<typeof EffectSchema>;
 export type VideoClip = Static<typeof VideoClipSchema>;
 export type AudioClip = Static<typeof AudioClipSchema>;
 export type ImageClip = Static<typeof ImageClipSchema>;
